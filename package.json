@@ -1,0 +1,31 @@
+{
+  "name": "oitechscripts",
+  "private": true,
+  "version": "0.0.1",
+  "description": "OI Tech Scripts",
+  "author": "OI Tech Admin <oitechadmin@proton.me>",
+  "license": "MIT",
+  "keywords": [],
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/app.ts --bundle --format=iife --outfile=dist/app.js && cp appsscript.json dist/",
+    "build:redeploy": "yarn check && yarn lint && yarn build && yarn redeploy",
+    "redeploy": "./clasp-redeploy.sh",
+    "check": "tsc --noEmit",
+    "lint": "yarn eslint {src,tests}/**/*.{js,ts}",
+    "lint:fix": "yarn lint --fix",
+    "prettier": "prettier {src,tests}/**/*.{js,ts} --check",
+    "prettier:fix": "prettier {src,tests}/**/*.{js,ts} --write",
+    "format": "yarn check && yarn prettier:fix && yarn lint:fix"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/google-apps-script": "^2.0.8",
+    "esbuild": "^0.27.4",
+    "eslint": "^10.1.0",
+    "prettier": "^3.8.1",
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.57.2"
+  },
+  "packageManager": "yarn@4.14.1"
+}
