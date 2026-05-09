@@ -1,0 +1,16 @@
+from _typeshed import Incomplete
+from google.auth import credentials as credentials, exceptions as exceptions, jwt as jwt
+
+TOKEN_EXCHANGE_TYPE: str
+ACCESS_TOKEN_TOKEN_TYPE: str
+SERVICE_ACCOUNT_TOKEN_TYPE: str
+JWT_LIFETIME: Incomplete
+
+class ServiceAccountCredentials(credentials.Credentials):
+    def __init__(self, signer, service_identity_name, project, audience, token_uri, ca_cert_path) -> None: ...
+    def refresh(self, request) -> None: ...
+    def with_gdch_audience(self, audience): ...
+    @classmethod
+    def from_service_account_info(cls, info): ...
+    @classmethod
+    def from_service_account_file(cls, filename): ...
