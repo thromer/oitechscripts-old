@@ -8,7 +8,12 @@ from oidrivehelper import AppConfig, create_app
 
 
 if __name__ == "__main__":
-    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"  # No-op in prod
+    # Without this fetch_token throws if we get more scopes than requested.
+    # Perhaps app should listen for the scope_changed signal and log
+    # See oauthlib/oauth2/rfc6749/parameters.py
+    os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
+
     secret_manager_client = SecretManagerServiceClient()
     client_secrets_config = cast(
         dict[str, dict[str, str]],

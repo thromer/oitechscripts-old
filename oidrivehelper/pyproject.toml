@@ -60,6 +60,7 @@ skip-magic-trailing-comma = true
 [dependency-groups]
 dev = [
     "basedpyright>=1.39.3",
+    "google-api-python-client-stubs>=1.36.0",
     "ruff>=0.15.12",
 ]
 
