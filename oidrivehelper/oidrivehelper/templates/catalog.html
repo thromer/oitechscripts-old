@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+
+{% block title %}Drive Catalog{% endblock %}
+
+{% block content %}
+  <form method="get">
+    <input type="text" name="folder_url" value="{{ folder_url }}" placeholder="Google Drive folder URL" size="70">
+    <button type="submit">Catalog</button>
+  </form>
+
+  {% if error %}
+    <p>{{ error }}</p>
+  {% elif submitted %}
+    <p>{{ count }} items found.</p>
+  {% endif %}
+{% endblock %}
