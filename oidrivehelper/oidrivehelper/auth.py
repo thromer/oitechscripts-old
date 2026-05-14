@@ -27,14 +27,16 @@ class CredentialsDict(TypedDict):
     scopes: Sequence[str] | None
 
 
-def credentials_to_dict(credentials: Credentials) -> CredentialsDict:
+def credentials_to_dict(
+    credentials: Credentials, granted_scopes: Sequence[str]
+) -> CredentialsDict:
     return {
         "token": credentials.token,
         "refresh_token": credentials.refresh_token,
         "token_uri": credentials.token_uri,
         "client_id": credentials.client_id,
         "client_secret": credentials.client_secret,
-        "scopes": credentials.granted_scopes,
+        "scopes": granted_scopes,
     }
 
 
@@ -85,29 +87,53 @@ def oauth2callback() -> ResponseValue:
         msg = f"Can't proceed without these scopes: {' '.join(missing_scopes)}"
         raise RuntimeError(msg)
 
-    set_session_credentials(credentials)
-    return redirect(cast(str, session.get("next")) or "/")
+    set_session_credentials(credentials, granted_scopes)
+    return redirect(cast(str, session.get("next")) or url_for("index.index"))
+
+
+@bp.before_app_request
+def load_logged_in_state() -> None:
+    # TODO: store credentials and userinfo in a single object in session
+    g.logged_in = bool(get_session_credentials())
 
 
 def get_session_credentials() -> CredentialsDict | dict[str, Never]:
     return cast(CredentialsDict | dict[str, Never], session.get("credentials") or {})
 
 
-def set_session_credentials(credentials: Credentials) -> None:
-    session["credentials"] = credentials_to_dict(credentials)
+def set_session_credentials(
+    credentials: Credentials, granted_scopes: Sequence[str]
+) -> None:
+    session["credentials"] = credentials_to_dict(credentials, granted_scopes)
+
+
+def del_session_credentials() -> None:
+    session.pop("credentials")
 
 
 def auth_required[**P, R: ResponseValue](view: Callable[P, R]) -> Callable[P, R]:
     @functools.wraps(view)
     def wrapped_view(*args: P.args, **kwargs: P.kwargs) -> R:
         credentials_dict = get_session_credentials()
-        scopes_granted = set(credentials_dict.get("scopes") or [])
-        if not set(_SCOPES).issubset(scopes_granted):
+        granted_scopes = credentials_dict.get("scopes") or []
+        if not set(_SCOPES).issubset(set(granted_scopes)):
             session["next"] = request.full_path
             return cast(R, redirect(url_for("auth.authorize", _external=False)))
         g.credentials = Credentials.from_authorized_user_info(credentials_dict)
         response = view(*args, **kwargs)
-        set_session_credentials(g.credentials)
+        set_session_credentials(g.credentials, granted_scopes)
         return response
 
     return wrapped_view
+
+
+@bp.route("/login")
+@auth_required
+def login() -> ResponseValue:
+    return redirect(request.referrer or url_for("index.index"))
+
+
+@bp.route("/logout")
+def logout() -> ResponseValue:
+    del_session_credentials()
+    return redirect(request.referrer or url_for("index.index"))

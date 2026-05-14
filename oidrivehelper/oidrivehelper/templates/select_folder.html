@@ -1,0 +1,36 @@
+{% extends 'base.html' %}
+
+{% block title %}Drive Folder Search{% endblock %}
+
+{% block content %}
+  <form method="get">
+    <input type="text" name="q" value="{{ q }}" placeholder="folder name">
+    <label><input type="checkbox" name="own" value="1" {% if own %}checked{% endif %}> I own</label>
+    <label><input type="checkbox" name="shared" value="1" {% if shared %}checked{% endif %}> Someone else owns</label>
+    <button type="submit">Search</button>
+  </form>
+
+  {% if searched %}
+    {% if folders %}
+      <ul>
+        {% for folder in folders %}
+          <li>
+            {{ folder.name }}
+            <button data-id="{{ folder.id }}" data-name="{{ folder.name }}"
+                    onclick="selectFolder(this.dataset.id, this.dataset.name)">Select</button>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p>No folders found.</p>
+    {% endif %}
+  {% endif %}
+
+  <div id="result"></div>
+
+  <script>
+    function selectFolder(id, name) {
+      document.getElementById('result').innerText = 'Selected: ' + name + ' (id: ' + id + ')';
+    }
+  </script>
+{% endblock %}
