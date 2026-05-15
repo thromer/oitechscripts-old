@@ -4,7 +4,9 @@
 
 {% block content %}
   <form method="get">
-    <input type="text" name="folder_url" value="{{ folder_url }}" placeholder="Google Drive folder URL" size="70">
+    <input type="text" name="folder_url" value="{{ folder_url }}" placeholder="Google Drive folder URL" size="70"><br>
+    <input type="text" name="spreadsheet_id" value="{{ spreadsheet_id }}" placeholder="Spreadsheet ID" size="50">
+    <input type="text" name="sheet_name" value="{{ sheet_name }}" placeholder="Sheet name">
     <button type="submit">Catalog</button>
   </form>
 

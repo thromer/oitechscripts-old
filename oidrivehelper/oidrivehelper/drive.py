@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, cast
+from datetime import datetime
+from typing import TYPE_CHECKING, TypedDict, cast
 from urllib.parse import urlparse
 
 import googleapiclient.discovery
@@ -23,23 +25,32 @@ if TYPE_CHECKING:
     from googleapiclient._apis.drive.v3 import DriveResource as DriveV3Resource
     from googleapiclient._apis.drive.v3 import File as FileV3
     from googleapiclient._apis.oauth2.v2 import Oauth2Resource
+    from googleapiclient._apis.sheets.v4 import SheetsResource
 bp = Blueprint("drive", __name__, url_prefix="/drive")
 
 
 def _get_drive_v3_resource() -> DriveV3Resource:
-    if not hasattr(g, "drive_resource"):
-        g.drive_resource = googleapiclient.discovery.build(
+    if not hasattr(g, "drive_v3_resource"):
+        g.drive_v3_resource = googleapiclient.discovery.build(
             "drive", "v3", credentials=cast(Credentials, g.credentials)
         )
-    return g.drive_resource
+    return g.drive_v3_resource
 
 
 def _get_drive_v2_resource() -> DriveV2Resource:
-    if not hasattr(g, "drive_resource"):
-        g.drive_resource = googleapiclient.discovery.build(
+    if not hasattr(g, "drive_v2_resource"):
+        g.drive_v2_resource = googleapiclient.discovery.build(
             "drive", "v2", credentials=cast(Credentials, g.credentials)
         )
-    return g.drive_resource
+    return g.drive_v2_resource
+
+
+def _get_spreadsheets_resource() -> SheetsResource.SpreadsheetsResource:
+    if not hasattr(g, "sheets_resource"):
+        g.spreadsheets_resource = googleapiclient.discovery.build(
+            "sheets", "v4", credentials=cast(Credentials, g.credentials)
+        ).spreadsheets()
+    return g.spreadsheets_resource
 
 
 @bp.route("/hello")
@@ -96,21 +107,51 @@ def select_folder() -> ResponseValue:
 
 _FILE_ID_MIN_LEN = 20
 
+
+def _isoformat_to_sheets_datetime(s: str) -> str:
+    return datetime.fromisoformat(s).astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
 _CATALOG_FIELDS = (
     "nextPageToken,"
-    "files(id,name,mimeType,shortcutDetails,createdTime,modifiedTime,"
+    "files(id,name,mimeType,parents,owners(emailAddress),size,shortcutDetails,createdTime,modifiedTime,"
     "lastModifyingUser(emailAddress),quotaBytesUsed,inheritedPermissionsDisabled)"
 )
 _PERMISSION_FIELDS = (
-    "permissions(type,emailAddress,role,pendingOwner,permissionDetails(inherited))"
+    "permissions(id,type,emailAddress,role,pendingOwner,permissionDetails(inherited))"
 )
 
 _DRIVE_BATCH_LIMIT = 100
+_SHEETS_BATCH_SIZE = 1000
 _RETRY = Retry(timeout=300)
 
 
+class _SpreadsheetRow(TypedDict):
+    id: str
+    parent_id: str
+    name: str
+    mimeType: str
+    owner: str
+    size: str
+    shortcuttId: str
+    shortcutMimeType: str
+    createdTime: str
+    modifiedTime: str
+    lastModifiedBy: str
+    quotaBytesUsed: str
+    inheritedPermissionsDisabled: bool
+    pendingOwner: str
+    ownerDup: str
+    writers: str
+    inheritedWriters: str
+    commenters: str
+    inheritedCommenters: str
+    viewers: str
+    inheritedViewers: str
+
+
 @dataclass
-class Perm:
+class _Perm:
     pending_owner: str = ""
     owner: str = ""
     writers: list[str] = field(default_factory=list)
@@ -121,51 +162,91 @@ class Perm:
     inherited_viewers: list[str] = field(default_factory=list)
 
 
-def make_row(f: FileV3) -> dict[str, str | bool]:
-    print(json.dumps(f, indent=2))
-    perm = Perm()
+def _get_header() -> list[str]:
+    return list(_SpreadsheetRow.__annotations__.keys())
+
+
+def _write_spreadsheet_header(spreadsheet_id: str, sheet_name: str) -> None:
+    _ = _RETRY(
+        _get_spreadsheets_resource()
+        .values()
+        .append(
+            spreadsheetId=spreadsheet_id,
+            range=sheet_name,
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [_get_header()]},
+        )
+        .execute
+    )()
+
+
+def _make_row(f: FileV3) -> _SpreadsheetRow:
+    # print(json.dumps(f, indent=2))
+    fid = f.get("id", "")
+    perm = _Perm()
     for p in f.get("permissions", []):
+        pid = p.get("id", "")
+        ptype = p.get("type")
+        if not ptype:
+            print(
+                f"WARNING: type missing in file {fid} permission {pid}", file=sys.stderr
+            )
+            continue
         principal = ""
-        if p["type"] == "anyone":
-            principal = "anyone"
-        elif p["type"] in ["user", "group"]:
-            principal = p["emailAddress"]
+        if ptype == "anyone":
+            principal = "a:anyone"
+        elif ptype == "user":
+            principal = f"u:{p.get('emailAddress', '')}"
+        elif ptype == "group":
+            principal = f"g:{p.get('emailAddress', '')}"
+        elif ptype == "domain":
+            principal = f"d:{p.get('domain', '')}"
         else:
-            msg = f"unhandled type {p['type']}"
-            raise RuntimeError(msg)
+            print(
+                f"WARNING: unhandled type {ptype} in file {fid} permission {pid}",
+                file=sys.stderr,
+            )
+            continue
         inherited = cast(bool, p["permissionDetails"][0]["inherited"])
-        if p["type"] == "user" and p["pendingOwner"]:
+        if ptype == "user" and p.get("pendingOwner"):
             perm.pending_owner = principal
-        if p["role"] == "owner":
+        prole = p.get("role", "")
+        if prole == "owner":
             perm.owner = principal
-        elif p["role"] == "writer":
+        elif prole == "writer":
             p_field = perm.inherited_writers if inherited else perm.writers
             p_field.append(principal)
-        elif p["role"] == "commenter":
+        elif prole == "commenter":
             p_field = perm.inherited_commenters if inherited else perm.commenters
             p_field.append(principal)
-        elif p["role"] == "reader":
+        elif prole == "reader":
             p_field = perm.inherited_viewers if inherited else perm.viewers
             p_field.append(principal)
         else:
-            msg = f"unhandled role {p['role']}"
-            raise RuntimeError(msg)
-        # TODO: MORE
+            print(
+                f"WARNING: unhandled role {prole} in file {fid} permission {pid}",
+                file=sys.stderr,
+            )
+            continue
 
     shortcut_details = f.get("shortcutDetails", {})
     return {
         "id": f["id"],
-        "name": f["name"],
+        "parent_id": f["parents"][0],
+        "name": f"'{f['name']}",
         "mimeType": f["mimeType"],
+        "owner": f["owners"][0]["emailAddress"],
+        "size": f.get("size", ""),
         "shortcuttId": shortcut_details.get("targetId", ""),
         "shortcutMimeType": shortcut_details.get("targetMimeType", ""),
-        "createdTime": f["createdTime"],
-        "modifiedTime": f["modifiedTime"],
+        "createdTime": _isoformat_to_sheets_datetime(f["createdTime"]),
+        "modifiedTime": _isoformat_to_sheets_datetime(f["modifiedTime"]),
         "lastModifiedBy": f.get("lastModifyingUser", {}).get("emailAddress", ""),
         "quotaBytesUsed": f["quotaBytesUsed"],
         "inheritedPermissionsDisabled": f["inheritedPermissionsDisabled"],
         "pendingOwner": perm.pending_owner or "",
-        "owner": perm.owner or "",
+        "ownerDup": perm.owner or "",
         "writers": ",".join(perm.writers),
         "inheritedWriters": ",".join(perm.inherited_writers),
         "commenters": ",".join(perm.commenters),
@@ -175,15 +256,32 @@ def make_row(f: FileV3) -> dict[str, str | bool]:
     }
 
 
-def _write_batch_to_spreadsheet(files: list[FileV3]) -> None:
-    # print(json.dumps(files, indent=2))
-    rows = [make_row(f) for f in files]
-    print(json.dumps(rows, indent=2))
+def _write_batch_to_spreadsheet(
+    files: list[FileV3], spreadsheet_id: str, sheet_name: str
+) -> None:
+    # print(f"write {len(files)} files to spreadsheet", file=sys.stderr)
+    rows = [_make_row(f) for f in files]
+    # print("first_row:", json.dumps(rows[0]))
+    # fbody = json.dumps({"values": [list(row.values()) for row in rows]})
+    # print(f"sheets request size approximately {len(fbody)}", file=sys.stderr)
+    _ = _RETRY(
+        _get_spreadsheets_resource()
+        .values()
+        .append(
+            spreadsheetId=spreadsheet_id,
+            range=sheet_name,
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [list(row.values()) for row in rows]},
+        )
+        .execute
+    )()
 
 
 def _add_permission_details(batch: list[FileV3]) -> None:
     drive = _get_drive_v3_resource()
     by_id = {f["id"]: f for f in batch}
+    # print(f"adding_permission_details to {len(batch)} files", file=sys.stderr)
 
     def callback(
         request_id: str, response: FileV3, exception: Exception | None
@@ -211,6 +309,7 @@ def _add_permission_details(batch: list[FileV3]) -> None:
 
 
 def _enumerate_folder(folder_id: str) -> Iterator[FileV3]:
+    # print(f"_enumerate_folder({folder_id})", file=sys.stderr)
     drive = _get_drive_v3_resource()
     queue = [folder_id]
     while queue:
@@ -227,19 +326,26 @@ def _enumerate_folder(folder_id: str) -> Iterator[FileV3]:
             for item in resp.get("files", []):
                 if item.get("mimeType") == "application/vnd.google-apps.folder":
                     queue.append(item["id"])
-                yield item
+                yield (item)
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
+
+
+# TODO: we can get parents directly with the file we don't have to carry it along
 
 
 @bp.route("/catalog")
 @auth_required
 def catalog() -> ResponseValue:
     folder_url = request.args.get("folder_url", "")
+    spreadsheet_id = request.args.get("spreadsheet_id", "")
+    sheet_name = request.args.get("sheet_name", "")
     submitted = "folder_url" in request.args
     count = 0
     error = ""
+
+    # TODO: FWIW this omits the root folder
 
     if submitted and folder_url:
         parts = [
@@ -248,23 +354,31 @@ def catalog() -> ResponseValue:
         if not parts:
             error = f"Could not extract folder ID from: {folder_url}"
         else:
+            _write_spreadsheet_header(spreadsheet_id, sheet_name)
             folder_id = parts[-1]
             batch: list[FileV3] = []
+
+            def _flush() -> int:
+                _add_permission_details(batch)
+                _write_batch_to_spreadsheet(batch, spreadsheet_id, sheet_name)
+                n = len(batch)
+                batch.clear()
+                return n
+
             for item in _enumerate_folder(folder_id):
                 batch.append(item)
-                if len(batch) >= _DRIVE_BATCH_LIMIT:
-                    _add_permission_details(batch)
-                    _write_batch_to_spreadsheet(batch)
-                    count += len(batch)
-                    batch.clear()
+                if len(batch) >= _SHEETS_BATCH_SIZE:
+                    count += _flush()
+                    print(f"{count=}", file=sys.stderr)
             if batch:
-                _add_permission_details(batch)
-                _write_batch_to_spreadsheet(batch)
-                count += len(batch)
+                count += _flush()
+                print(f"final {count=}", file=sys.stderr)
 
     return render_template(
         "catalog.html",
         folder_url=folder_url,
+        spreadsheet_id=spreadsheet_id,
+        sheet_name=sheet_name,
         submitted=submitted,
         count=count,
         error=error,
